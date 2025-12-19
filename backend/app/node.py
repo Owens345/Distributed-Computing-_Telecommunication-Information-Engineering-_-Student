@@ -60,21 +60,28 @@ def commit(transaction_id: str):
 
 @app.post("/rollback")
 def rollback(transaction_id: str):
-    with transaction_lock:
-        with SessionLocal() as db:
-            try:
-                logs = db.query(TransactionLog).filter(TransactionLog.transaction_id == transaction_id).all()
-                for log in logs:
-                    log.status = TransactionStatus.ROLLED_BACK
-                    if log.operation == "CREATE" and log.lease_id:
-                        lease = db.query(Lease).filter(Lease.lease_id == log.lease_id).first()
-                        if lease:
-                            db.delete(lease)
-                db.commit()
-                return {"status": "ROLLED_BACK"}
-            except Exception as e:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=str(e))
+    with SessionLocal() as db:
+        try:
+            logs = db.query(TransactionLog).filter(TransactionLog.transaction_id == transaction_id).all()
+
+            # Update logs
+            for log in logs:
+                log.status = TransactionStatus.ROLLED_BACK
+            db.flush()  # flush before deleting leases
+
+            # Delete leases for CREATE operations, only unique lease_ids
+            lease_ids_to_delete = set(log.lease_id for log in logs if log.operation == "CREATE" and log.lease_id)
+            for lease_id in lease_ids_to_delete:
+                lease = db.query(Lease).filter(Lease.lease_id == lease_id).first()
+                if lease:
+                    db.delete(lease)
+
+            db.commit()
+            return {"status": "ROLLED_BACK"}
+
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/leases")
 def get_leases():
